@@ -18,11 +18,11 @@ Imports System.Windows.Forms
 
 Public Class SimpleTranslateTool
 
-    Public Shared Sub translateForm(clsForm As Form, Optional strLanguage As String = "")
+    Public Shared Sub translateForm(clsForm As Form, strDataSource As String, Optional strLanguage As String = "")
         'connect to the SQLite database that contains the translations
         Dim clsBuilder As New SQLiteConnectionStringBuilder With {
             .FailIfMissing = True,
-            .DataSource = My.Settings.translationDatabase
+            .DataSource = strDataSource
         }
         Using clsConnection As New SQLiteConnection(clsBuilder.ConnectionString)
             clsConnection.Open()
@@ -47,33 +47,17 @@ Public Class SimpleTranslateTool
             End Using
             clsConnection.Close()
         End Using
-
-        'Dim clsBuilder As New SQLiteConnectionStringBuilder()
-        'Dim command As SQLiteCommand
-        'Dim connection As New SQLiteConnection()
-        'Dim datareader As SQLiteDataReader
-
-        'clsBuilder.FailIfMissing = True
-        'clsBuilder.DataSource = My.Settings.localDatabase
-        'connection = New SQLiteConnection(clsBuilder.ConnectionString)
-        'connection.Open()
-        'command = connection.CreateCommand()
-
-        'command.CommandText = "SELECT control_name, translation FROM rinstat_translations WHERE form_name = """ &
-        '                      frm.Name & """ And language_code = """ & language & """"
-        'datareader = command.ExecuteReader()
-        'While (datareader.Read())
-        '    Dim strControlName As String = datareader.GetString(0)
-        '    Dim strTranslation As String = datareader.GetString(1)
-        '    CallByName(frm.Controls(strControlName), "Text", CallType.Set, strTranslation)
-        'End While
     End Sub
 
-    Public Shared Sub translateMenuItem(ctrParent As Control, tsItem As ToolStripItem, Optional strLanguage As String = "")
+
+    Public Shared Sub translateMenuItems(tsCollection As ToolStripItemCollection, ctrParent As Control, strDataSource As String, Optional strLanguage As String = "")
+
+        Dim dctMenuItems As Dictionary(Of String, ToolStripMenuItem) = GetDctMenuItems(tsCollection)
+
         'connect to the SQLite database that contains the translations
         Dim clsBuilder As New SQLiteConnectionStringBuilder With {
             .FailIfMissing = True,
-            .DataSource = My.Settings.translationDatabase
+            .DataSource = strDataSource
         }
         Using clsConnection As New SQLiteConnection(clsBuilder.ConnectionString)
             clsConnection.Open()
@@ -81,22 +65,23 @@ Public Class SimpleTranslateTool
 
                 'get all translations for the specified form and language
                 clsCommand.CommandText = "SELECT control_name, translation FROM form_controls, translations WHERE form_name = """ & ctrParent.Name &
-                                         """ AND control_name = """ & tsItem.Name & """ AND language_code = """ & strLanguage & """ And form_controls.id_text = translations.id_text"
-                Dim clsReader As SQLiteDataReader = clsCommand.ExecuteReader()
-                Using clsReader
+                                         """ AND language_code = """ & strLanguage & """ And form_controls.id_text = translations.id_text"
+                Using clsReader As SQLiteDataReader = clsCommand.ExecuteReader()
 
                     'for each translation row
                     While (clsReader.Read())
 
+                        'ignore rows where the translation text is null or missing
                         If clsReader.FieldCount < 2 OrElse clsReader.IsDBNull(1) Then
                             Continue While
                         End If
 
-                        'translate the control's text to the new language
+                        'translate the menu item's text to the new language
                         Dim strMenuItemName As String = clsReader.GetString(0)
                         Dim strTranslation As String = clsReader.GetString(1)
-                        If strMenuItemName = tsItem.Name Then
-                            CallByName(tsItem, "Text", CallType.Set, strTranslation)
+                        Dim mnuItem As ToolStripMenuItem = Nothing
+                        If dctMenuItems.TryGetValue(strMenuItemName, mnuItem) Then
+                            mnuItem.Text = strTranslation
                         End If
 
                     End While
@@ -106,56 +91,116 @@ Public Class SimpleTranslateTool
         End Using
     End Sub
 
-    Public Shared Function listLanguages() As AvailableLanguages
-        Dim builder As New SQLiteConnectionStringBuilder()
-        Dim command As SQLiteCommand
-        Dim connection As New SQLiteConnection()
-        Dim currentIndex As Integer = 0
-        Dim datareader As SQLiteDataReader
-        Dim dict As New Dictionary(Of String, String)
-        Dim languages As New List(Of String)
-        Dim languageCodes As New List(Of String)
-        Dim selectedIndex As Integer = 0
+    Private Shared Function GetDctMenuItems(tsCollection As ToolStripItemCollection) As Dictionary(Of String, ToolStripMenuItem)
+        Dim dctMenuItems As Dictionary(Of String, ToolStripMenuItem) = New Dictionary(Of String, ToolStripMenuItem)
 
-        Try
-            builder.FailIfMissing = True
-            builder.DataSource = My.Settings.translationDatabase
-            connection = New SQLiteConnection(builder.ConnectionString)
-            connection.Open()
-            command = connection.CreateCommand()
-            command.CommandText = "SELECT code, language FROM available_languages"
-            datareader = command.ExecuteReader()
-            While (datareader.Read())
-                languageCodes.Add(datareader.GetValue(0))
-                languages.Add(datareader.GetString(1))
-                If datareader.GetValue(0) = "en" Then
-                    selectedIndex = currentIndex
-                End If
-                currentIndex += 1
-            End While
-        Catch ex As Exception
-            ' If processing information from SQLite fails for any reason then return
-            ' English as the only option (if a connection is open then close it).
-            connection.Close()
-            languageCodes.Add("en")
-            languages.Add("English")
-            selectedIndex = 0
-        End Try
-
-        'For Each keyValue As String() In languages.Zip(Of String, String())(languageCodes, Tuple.Create())
-        For Each keyValue In languages.Zip(Of String, Object)(languageCodes, Function(s1, s2) Tuple.Create(s1, s2))
-            dict.Add(keyValue.Item1, keyValue.Item2)
+        For Each tsItem As ToolStripItem In tsCollection
+            If Not String.IsNullOrEmpty(tsItem.Text) Then
+                dctMenuItems.Add(tsItem.Name, tsItem)
+            End If
+            Dim mnuItem As ToolStripMenuItem = TryCast(tsItem, ToolStripMenuItem)
+            If mnuItem IsNot Nothing AndAlso mnuItem.HasDropDownItems Then
+                Dim dctSubMenuItems As Dictionary(Of String, ToolStripMenuItem) = GetDctMenuItems(mnuItem.DropDownItems)
+                dctMenuItems = dctMenuItems.Union(dctSubMenuItems).ToDictionary(Function(p) p.Key, Function(p) p.Value)
+            End If
         Next
 
-        Return New AvailableLanguages With {
-                .languageCodes = languageCodes,
-                .languages = languages,
-                .selectedIndex = selectedIndex,
-                .lookupCode = dict
-            }
+        Return dctMenuItems
     End Function
 
 
+    '**********************************************************************************************
+    ' TODO SJL 23/3/21 Everything below this line is historical and can be deleted
+    '**********************************************************************************************
+    ' 
+    ' 
+    'Public Shared Sub DELETEMEtranslateMenuItem(ctrParent As Control, tsItem As ToolStripItem, Optional strLanguage As String = "")
+    'connect to the SQLite database that contains the translations
+    '        Dim clsBuilder As New SQLiteConnectionStringBuilder With {
+    '            .FailIfMissing = True,
+    '            .DataSource = My.Settings.translationDatabase
+    '        }
+    '        Using clsConnection As New SQLiteConnection(clsBuilder.ConnectionString)
+    '            clsConnection.Open()
+    '            Using clsCommand As New SQLiteCommand(clsConnection)
+    '
+    '                'get all translations for the specified form and language
+    '                clsCommand.CommandText = "SELECT control_name, translation FROM form_controls, translations WHERE form_name = """ & ctrParent.Name &
+    '                                         """ AND control_name = """ & tsItem.Name & """ AND language_code = """ & strLanguage & """ And form_controls.id_text = translations.id_text"
+    '                Dim clsReader As SQLiteDataReader = clsCommand.ExecuteReader()
+    '                Using clsReader
+    '
+    '                    'for each translation row
+    '                    While (clsReader.Read())
+    '
+    '                        If clsReader.FieldCount < 2 OrElse clsReader.IsDBNull(1) Then
+    '                            Continue While
+    '                        End If
+    '
+    '                        'translate the control's text to the new language
+    '                        Dim strMenuItemName As String = clsReader.GetString(0)
+    '                        Dim strTranslation As String = clsReader.GetString(1)
+    '                        If strMenuItemName = tsItem.Name Then
+    '                            CallByName(tsItem, "Text", CallType.Set, strTranslation)
+    '                        End If
+    '
+    '                    End While
+    '                End Using
+    '            End Using
+    '            clsConnection.Close()
+    '        End Using
+    '    End Sub
+    '
+    '    Public Shared Function DELETEMElistLanguages() As AvailableLanguages
+    '        Dim builder As New SQLiteConnectionStringBuilder()
+    '        Dim command As SQLiteCommand
+    '        Dim connection As New SQLiteConnection()
+    '        Dim currentIndex As Integer = 0
+    '        Dim datareader As SQLiteDataReader
+    '        Dim dict As New Dictionary(Of String, String)
+    '        Dim languages As New List(Of String)
+    '        Dim languageCodes As New List(Of String)
+    '        Dim selectedIndex As Integer = 0
+    '
+    '        Try
+    '            builder.FailIfMissing = True
+    '            builder.DataSource = My.Settings.translationDatabase
+    '            connection = New SQLiteConnection(builder.ConnectionString)
+    '            connection.Open()
+    '            command = connection.CreateCommand()
+    '            command.CommandText = "SELECT code, language FROM available_languages"
+    '            datareader = command.ExecuteReader()
+    '            While (datareader.Read())
+    '                languageCodes.Add(datareader.GetValue(0))
+    '                languages.Add(datareader.GetString(1))
+    '                If datareader.GetValue(0) = "en" Then
+    '                    selectedIndex = currentIndex
+    '                End If
+    '                currentIndex += 1
+    '            End While
+    '        Catch ex As Exception
+    '            ' If processing information from SQLite fails for any reason then return
+    '            ' English as the only option (if a connection is open then close it).
+    '            connection.Close()
+    '            languageCodes.Add("en")
+    '            languages.Add("English")
+    '            selectedIndex = 0
+    '        End Try
+    '
+    '        'For Each keyValue As String() In languages.Zip(Of String, String())(languageCodes, Tuple.Create())
+    '        For Each keyValue In languages.Zip(Of String, Object)(languageCodes, Function(s1, s2) Tuple.Create(s1, s2))
+    '            dict.Add(keyValue.Item1, keyValue.Item2)
+    '        Next
+    '
+    '        Return New AvailableLanguages With {
+    '                .languageCodes = languageCodes,
+    '                .languages = languages,
+    '                .selectedIndex = selectedIndex,
+    '                .lookupCode = dict
+    '            }
+    '    End Function
+    '
+    '
     'Public Shared Function translateOpenForms(Optional language As String = "")
     '    Dim languageCode As String
     '    For Each frm As Form In My.Application.OpenForms
@@ -163,7 +208,7 @@ Public Class SimpleTranslateTool
     '    Next
     '    Return languageCode
     'End Function
-
+    '
     'Public Shared Function translateForm(frm As Form, Optional language As String = "")
     '    ' Change text in all open forms to new language choice
     '    Dim builder As New SQLiteConnectionStringBuilder()
